@@ -11,7 +11,7 @@ st.set_page_config(
 )
 
 st.title("📍 편의점 & 카페 위치 탐색 지도")
-st.caption("시/도별 매장 위치 탐색 및 기준 매장 중심 반경 검색 기능을 제공합니다.")
+st.caption("시/도 및 동별 매장 위치 탐색과 기준 매장 중심 반경 검색 기능을 제공합니다.")
 
 # --- 2. 데이터 불러오기 및 전처리 함수 ---
 @st.cache_data
@@ -24,7 +24,7 @@ def load_data():
             df = pd.read_csv("store_filtered.csv")
         except FileNotFoundError:
             st.error("데이터 파일('store.csv' 또는 'store_filtered.csv')을 찾을 수 없습니다.")
-            return pd.DataFrame()
+            return pd.DataFrame(), None
 
     # 업종 필터링 ("편의점", "카페")
     df = df[df["상권업종소분류명"].isin(["편의점", "카페"])].copy()
@@ -34,10 +34,18 @@ def load_data():
     df["경도"] = pd.to_numeric(df["경도"], errors="coerce")
     df = df.dropna(subset=["위도", "경도"])
 
-    return df
+    # 동 관련 컬럼 자동 탐색 ("행정동명", "법정동명", "동명" 순으로 찾기)
+    dong_col = None
+    possible_dong_cols = ["행정동명", "법정동명", "동명", "법정동", "행정동"]
+    for col in possible_dong_cols:
+        if col in df.columns:
+            dong_col = col
+            break
+
+    return df, dong_col
 
 # 데이터 로드
-df_raw = load_data()
+df_raw, dong_column = load_data()
 
 if df_raw.empty:
     st.stop()
@@ -69,10 +77,20 @@ st.sidebar.header("🔍 검색 필터")
 sido_list = sorted(df_raw["시도명"].dropna().unique().tolist())
 selected_sido = st.sidebar.selectbox("지역(시/도) 선택", sido_list)
 
-# 선택한 시/도의 매장만 1차 필터링
+# 선택한 시/도의 매장 1차 필터링
 filtered_df = df_raw[df_raw["시도명"] == selected_sido].copy()
 
-# 4-2. 반경 검색 옵션
+# 4-2. 동 선택 (동 컬럼이 존재할 경우)
+if dong_column:
+    dong_list = ["전체"] + sorted(filtered_df[dong_column].dropna().unique().tolist())
+    selected_dong = st.sidebar.selectbox("동 선택", dong_list)
+
+    if selected_dong != "전체":
+        filtered_df = filtered_df[filtered_df[dong_column] == selected_dong]
+else:
+    st.sidebar.info("💡 데이터셋에 동(행정동/법정동) 정보 열을 찾지 못해 동별 필터가 비활성화되었습니다.")
+
+# 4-3. 반경 검색 옵션
 st.sidebar.markdown("---")
 use_radius = st.sidebar.checkbox("반경 검색 사용하기")
 
@@ -93,11 +111,11 @@ if use_radius:
         target_lat = target_store["위도"]
         target_lon = target_store["경도"]
 
-        # 전체 매장과의 거리 계산 후 필터링
+        # 거리 계산 후 반경 내 매장 필터링
         filtered_df["거리_km"] = haversine_distance(target_lat, target_lon, filtered_df["위도"], filtered_df["경도"])
         filtered_df = filtered_df[filtered_df["거리_km"] <= radius_km]
     else:
-        st.sidebar.warning("선택한 지역에 매장이 없습니다.")
+        st.sidebar.warning("선택 조건에 맞는 매장이 없습니다.")
 
 # --- 5. 화면 상단 - 지표 카드 (st.metric) ---
 if use_radius and selected_store_name:
@@ -121,7 +139,11 @@ else:
     # 색상 지정 (편의점: 파란색, 카페: 주황색)
     color_map = {"편의점": "#1f77b4", "카페": "#ff7f0e"}
 
-    # 반경 검색 중인 경우 기준 매장을 중심으로 지도 이동 및 확대 설정
+    # Hover 정보 설정
+    hover_cols = {"상권업종소분류명": True, "위도": False, "경도": False}
+    if dong_column:
+        hover_cols[dong_column] = True
+
     map_kwargs = {
         "data_frame": filtered_df,
         "lat": "위도",
@@ -129,8 +151,8 @@ else:
         "color": "상권업종소분류명",
         "color_discrete_map": color_map,
         "hover_name": "상호명",
-        "hover_data": {"상권업종소분류명": True, "위도": False, "경도": False},
-        "zoom": 13 if use_radius else 10,
+        "hover_data": hover_cols,
+        "zoom": 13 if use_radius else 11,
     }
 
     if use_radius and selected_store_name:
