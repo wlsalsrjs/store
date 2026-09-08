@@ -4,17 +4,17 @@ import numpy as np
 import json
 import streamlit.components.v1 as components
 
-# --- 1. 페이지 기본 설정 ---
+# --- 1. Page Configuration ---
 st.set_page_config(
-    page_title="편의점 & 카페 지도 탐색기 (레이저 모드 포함)",
+    page_title="Store Map & Laser Destructor",
     page_icon="💥",
     layout="wide"
 )
 
-st.title("📍 편의점 & 카페 지도 탐색기")
-st.caption("기본 필터 기능과 함께 상단의 '🔥 레이저 모드'를 켜면 지도를 클릭해 매장을 파괴할 수 있습니다!")
+st.title("📍 Store Map Explorer & Laser Strike Simulator")
+st.caption("Filter stores or toggle 'Laser Mode' in the sidebar to incinerate locations on click!")
 
-# --- 2. 데이터 불러오기 및 전처리 ---
+# --- 2. Data Loading & Preprocessing ---
 @st.cache_data
 def load_data():
     try:
@@ -23,18 +23,18 @@ def load_data():
         try:
             df = pd.read_csv("store_filtered.csv")
         except FileNotFoundError:
-            st.error("데이터 파일('store.csv' 또는 'store_filtered.csv')을 찾을 수 없습니다.")
+            st.error("Data file ('store.csv' or 'store_filtered.csv') not found.")
             return pd.DataFrame(), None
 
-    # 업종 필터링 ("편의점", "카페")
+    # Filter categories
     df = df[df["상권업종소분류명"].isin(["편의점", "카페"])].copy()
 
-    # 위도·경도 결측치 제거 및 숫자형 변환
+    # Clean Lat/Lon
     df["위도"] = pd.to_numeric(df["위도"], errors="coerce")
     df["경도"] = pd.to_numeric(df["경도"], errors="coerce")
     df = df.dropna(subset=["위도", "경도"])
 
-    # 동 관련 컬럼 탐색
+    # Detect Dong column
     dong_col = None
     possible_dong_cols = ["행정동명", "법정동명", "동명", "법정동", "행정동"]
     for col in possible_dong_cols:
@@ -49,44 +49,53 @@ df_raw, dong_column = load_data()
 if df_raw.empty:
     st.stop()
 
-# --- 3. 사이드바 - 검색 및 필터 옵션 ---
-st.sidebar.header("🔍 검색 필터")
+# --- 3. Sidebar - Filtering & Laser Controls ---
+st.sidebar.header("🔍 Location Filter")
 
 sido_list = sorted(df_raw["시도명"].dropna().unique().tolist())
-selected_sido = st.sidebar.selectbox("지역(시/도) 선택", sido_list)
+selected_sido = st.sidebar.selectbox("Select Region (Sido)", sido_list)
 
 filtered_df = df_raw[df_raw["시도명"] == selected_sido].copy()
 
 if dong_column:
-    dong_list = ["전체"] + sorted(filtered_df[dong_column].dropna().unique().tolist())
-    selected_dong = st.sidebar.selectbox("동 선택", dong_list)
+    dong_list = ["All"] + sorted(filtered_df[dong_column].dropna().unique().tolist())
+    selected_dong = st.sidebar.selectbox("Select Neighborhood (Dong)", dong_list)
 
-    if selected_dong != "전체":
+    if selected_dong != "All":
         filtered_df = filtered_df[filtered_df[dong_column] == selected_dong]
 
-# 상단 모드 전환 옵션
-laser_mode = st.checkbox("🔥 레이저 파괴 모드 활성화", value=False)
+# Mode Toggle & Laser Sliders
+st.sidebar.markdown("---")
+laser_mode = st.sidebar.checkbox("🔥 Enable Laser Destruction Mode", value=False)
 
-# --- 4. 일반 지표 카드 ---
+strike_radius = 60
+particle_count = 5
+
+if laser_mode:
+    st.sidebar.subheader("💥 Laser Strike Controls")
+    strike_radius = st.sidebar.slider("Strike Blast Radius (px)", min_value=20, max_value=200, value=80, step=10)
+    particle_count = st.sidebar.slider("Explosion Intensity (Particles)", min_value=1, max_value=20, value=8, step=1)
+
+# --- 4. Metrics Cards ---
 convenience_count = len(filtered_df[filtered_df["상권업종소분류명"] == "편의점"])
 cafe_count = len(filtered_df[filtered_df["상권업종소분류명"] == "카페"])
 total_count = len(filtered_df)
 
 col1, col2, col3 = st.columns(3)
-col1.metric("🏪 편의점 수", f"{convenience_count:,} 개")
-col2.metric("☕ 카페 수", f"{cafe_count:,} 개")
-col3.metric("🏢 전체 매장 수", f"{total_count:,} 개")
+col1.metric("🏪 Convenience Stores", f"{convenience_count:,}")
+col2.metric("☕ Cafes", f"{cafe_count:,}")
+col3.metric("🏢 Total Stores", f"{total_count:,}")
 
 st.markdown("---")
 
-# --- 5. 지도 및 레이저 모드 분기 처리 ---
+# --- 5. Map & Interactive Canvas ---
 if filtered_df.empty:
-    st.info("조건에 맞는 매장이 없습니다. 필터 옵션을 변경해 보세요.")
+    st.info("No stores match the selected criteria.")
 else:
     if laser_mode:
-        st.warning("🎯 화면(지도)을 클릭해 보세요! 마우스 위치로 레이저가 쏴지며 주변 매장이 타서 소멸합니다.")
+        st.warning(f"🎯 Click anywhere on the map! Blast Radius: {strike_radius}px | Particles per frame: {particle_count}")
         
-        # HTML/JS용 좌표 데이터 변환
+        # Prepare data for JS
         stores_data = []
         for _, row in filtered_df.iterrows():
             stores_data.append({
@@ -96,7 +105,6 @@ else:
                 "lng": float(row["경도"])
             })
 
-        # Canvas 기반 레이저 애니메이션 인터랙티브 앱 (HTML/JS)
         html_code = f"""
         <!DOCTYPE html>
         <html>
@@ -112,7 +120,7 @@ else:
             </style>
         </head>
         <body>
-            <div id="info">남은 매장: <span id="count">0</span>개 (클릭시 레이저 발사!)</div>
+            <div id="info">Remaining Stores: <span id="count">0</span> (Click to fire laser!)</div>
             <canvas id="canvas"></canvas>
 
             <script>
@@ -124,8 +132,10 @@ else:
                 canvas.height = 650;
 
                 const rawStores = {json.dumps(stores_data)};
+                const blastRadius = {strike_radius};
+                const particleIntensity = {particle_count};
 
-                // 경계 좌표 구하기
+                // Normalize bounding coordinates
                 let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
                 rawStores.forEach(s => {{
                     if(s.lat < minLat) minLat = s.lat;
@@ -134,7 +144,6 @@ else:
                     if(s.lng > maxLng) maxLng = s.lng;
                 }});
 
-                // 화면 좌표 변환 (Padding 포함)
                 const pad = 60;
                 let stores = rawStores.map(s => {{
                     const x = pad + ((s.lng - minLng) / (maxLng - minLng || 1)) * (canvas.width - pad * 2);
@@ -142,19 +151,19 @@ else:
                     return {{
                         ...s, x, y,
                         alive: true,
-                        burnProgress: 0 // 타들어가는 애니메이션 상태
+                        burnProgress: 0
                     }};
                 }});
 
                 let lasers = [];
                 let particles = [];
+                let reticles = [];
 
                 function draw() {{
-                    // 어두운 배경 지도 느낌
                     ctx.fillStyle = '#181c24';
                     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-                    // 그리드 선 그리대로 지도 분위기 연출
+                    // Grid lines
                     ctx.strokeStyle = '#2a3242';
                     ctx.lineWidth = 1;
                     for(let x=0; x<canvas.width; x+=50) {{
@@ -164,22 +173,36 @@ else:
                         ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(canvas.width, y); ctx.stroke();
                     }}
 
-                    // 매장(점) 그리기 및 불타서 없어지는 연출
+                    // Draw blast area reticles
+                    reticles.forEach((r, idx) => {{
+                        ctx.beginPath();
+                        ctx.arc(r.x, r.y, blastRadius * r.scale, 0, Math.PI * 2);
+                        ctx.strokeStyle = `rgba(255, 0, 0, ${{r.alpha}})`;
+                        ctx.lineWidth = 2;
+                        ctx.stroke();
+
+                        r.scale += 0.05;
+                        r.alpha -= 0.04;
+                        if(r.alpha <= 0) reticles.splice(idx, 1);
+                    }});
+
+                    // Draw store nodes & burning animation
                     let activeCount = 0;
                     stores.forEach(s => {{
                         if(!s.alive) return;
                         activeCount++;
 
                         if(s.burning) {{
-                            s.burnProgress += 0.05;
-                            // 타들어갈 때 주황/빨강 폭발 파티클 생성
-                            for(let i=0; i<3; i++) {{
+                            s.burnProgress += 0.04;
+                            
+                            // Spawn particles based on slider intensity
+                            for(let i=0; i<particleIntensity; i++) {{
                                 particles.push({{
                                     x: s.x, y: s.y,
-                                    vx: (Math.random()-0.5)*6,
-                                    vy: (Math.random()-0.5)*6,
+                                    vx: (Math.random()-0.5) * (particleIntensity * 1.2),
+                                    vy: (Math.random()-0.5) * (particleIntensity * 1.2),
                                     life: 1.0,
-                                    color: Math.random() > 0.5 ? '#ff4500' : '#ffa500'
+                                    color: Math.random() > 0.3 ? '#ff4500' : '#ffff00'
                                 }});
                             }}
                             if(s.burnProgress >= 1) {{
@@ -196,7 +219,6 @@ else:
                         }}
                         ctx.fill();
 
-                        // 매장명 텍스트
                         ctx.fillStyle = 'rgba(255,255,255,0.6)';
                         ctx.font = '10px sans-serif';
                         ctx.fillText(s.name, s.x + 8, s.y + 3);
@@ -204,7 +226,7 @@ else:
 
                     countEl.innerText = activeCount;
 
-                    // 레이저 그리기
+                    // Draw incoming laser strike beam
                     lasers.forEach((l, index) => {{
                         ctx.beginPath();
                         ctx.moveTo(l.sx, l.sy);
@@ -212,24 +234,24 @@ else:
                         ctx.strokeStyle = '#00ffff';
                         ctx.lineWidth = l.width;
                         ctx.shadowColor = '#00ffff';
-                        ctx.shadowBlur = 15;
+                        ctx.shadowBlur = 20;
                         ctx.stroke();
                         ctx.shadowBlur = 0;
 
-                        l.width *= 0.7; // 레이저 서서히 사라짐
+                        l.width *= 0.75;
                         if(l.width < 0.5) lasers.splice(index, 1);
                     }});
 
-                    // 파티클(재/파편) 애니메이션
+                    // Update & draw particles
                     particles.forEach((p, index) => {{
                         p.x += p.vx;
                         p.y += p.vy;
-                        p.life -= 0.03;
+                        p.life -= 0.025;
                         if(p.life <= 0) {{
                             particles.splice(index, 1);
                         }} else {{
                             ctx.beginPath();
-                            ctx.arc(p.x, p.y, 2, 0, Math.PI*2);
+                            ctx.arc(p.x, p.y, Math.random()*2 + 1, 0, Math.PI*2);
                             ctx.fillStyle = p.color;
                             ctx.globalAlpha = p.life;
                             ctx.fill();
@@ -240,26 +262,28 @@ else:
                     requestAnimationFrame(draw);
                 }}
 
-                // 클릭 시 마우스 위치로 레이저 발사 및 피격 판정
                 canvas.addEventListener('click', (e) => {{
                     const rect = canvas.getBoundingClientRect();
                     const targetX = e.clientX - rect.left;
                     const targetY = e.clientY - rect.top;
 
-                    // 하늘(위쪽)에서 타겟으로 궤적 레이저 발사
+                    // Laser beam
                     lasers.push({{
-                        sx: targetX + (Math.random() - 0.5) * 200,
+                        sx: targetX + (Math.random() - 0.5) * 300,
                         sy: 0,
                         ex: targetX,
                         ey: targetY,
-                        width: 12
+                        width: 15
                     }});
 
-                    // 타격 위치 주변(반경 60px) 매장 불태우기
+                    // Visual shockwave ring matching blast radius
+                    reticles.push({{ x: targetX, y: targetY, scale: 0.1, alpha: 1.0 }});
+
+                    // Trigger stores inside blastRadius
                     stores.forEach(s => {{
                         if(s.alive && !s.burning) {{
                             const dist = Math.hypot(s.x - targetX, s.y - targetY);
-                            if(dist < 60) {{
+                            if(dist <= blastRadius) {{
                                 s.burning = true;
                             }}
                         }}
@@ -274,7 +298,7 @@ else:
         components.html(html_code, height=670)
 
     else:
-        # 기존 Plotly 기반 일반 지도 표시
+        # Standard Plotly Map
         import plotly.express as px
         color_map = {"편의점": "#1f77b4", "카페": "#ff7f0e"}
 
@@ -298,5 +322,5 @@ else:
         else:
             fig = px.scatter_mapbox(**map_kwargs, mapbox_style="open-street-map")
 
-        fig.update_layout(margin={"r": 0, "t": 0, "l": 0, "b": 0}, legend_title_text="업종 구분")
+        fig.update_layout(margin={"r": 0, "t": 0, "l": 0, "b": 0}, legend_title_text="Category")
         st.plotly_chart(fig, use_container_width=True)
