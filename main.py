@@ -1,326 +1,299 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-import json
-import streamlit.components.v1 as components
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>3D HTML5 FPS Game</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+            user-select: none;
+        }
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 10px;
+            height: 10px;
+            color: white;
+            font-size: 24px;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            z-index: 10;
+        }
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            font-size: 20px;
+            font-weight: bold;
+            text-shadow: 2px 2px 4px #000000;
+            z-index: 10;
+        }
+        #instructions {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            font-size: 24px;
+            cursor: pointer;
+            z-index: 20;
+        }
+    </style>
+    <!-- Three.js 3D 엔진 불러오기 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
 
-# --- 1. Page Configuration ---
-st.set_page_config(
-    page_title="Store Map & Laser Destructor",
-    page_icon="💥",
-    layout="wide"
-)
+    <div id="crosshair">+</div>
+    <div id="ui">
+        플레이어 HP: <span id="playerHp">100</span><br>
+        적 HP: <span id="enemyHp">100</span>
+    </div>
+    <div id="instructions">
+        <h1>클릭하여 게임 시작</h1>
+        <p>이동: W, A, S, D</p>
+        <p>시점: 마우스 이동</p>
+        <p>사격: 마우스 좌클릭</p>
+    </div>
 
-st.title("📍 Store Map Explorer & Laser Strike Simulator")
-st.caption("Filter stores or toggle 'Laser Mode' in the sidebar to incinerate locations on click!")
+    <script>
+        // --- 1. 기본 씬 설정 ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87ceeb); // 하늘색 배경
+        scene.fog = new THREE.Fog(0x87ceeb, 0, 75);
 
-# --- 2. Data Loading & Preprocessing ---
-@st.cache_data
-def load_data():
-    try:
-        df = pd.read_csv("store.csv")
-    except FileNotFoundError:
-        try:
-            df = pd.read_csv("store_filtered.csv")
-        except FileNotFoundError:
-            st.error("Data file ('store.csv' or 'store_filtered.csv') not found.")
-            return pd.DataFrame(), None
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
 
-    # Filter categories
-    df = df[df["상권업종소분류명"].isin(["편의점", "카페"])].copy()
+        // 조명 추가
+        const light = new THREE.HemisphereLight(0xffffff, 0x444444, 1);
+        light.position.set(0, 20, 0);
+        scene.add(light);
 
-    # Clean Lat/Lon
-    df["위도"] = pd.to_numeric(df["위도"], errors="coerce")
-    df["경도"] = pd.to_numeric(df["경도"], errors="coerce")
-    df = df.dropna(subset=["위도", "경도"])
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(10, 20, 10);
+        scene.add(dirLight);
 
-    # Detect Dong column
-    dong_col = None
-    possible_dong_cols = ["행정동명", "법정동명", "동명", "법정동", "행정동"]
-    for col in possible_dong_cols:
-        if col in df.columns:
-            dong_col = col
-            break
+        // 바닥 및 장애물(벽) 생성
+        const floorGeo = new THREE.PlaneGeometry(100, 100);
+        const floorMat = new THREE.MeshLambertMaterial({ color: 0x2e8b57 });
+        const floor = new THREE.Mesh(floorGeo, floorMat);
+        floor.rotation.x = -Math.PI / 2;
+        scene.add(floor);
 
-    return df, dong_col
-
-df_raw, dong_column = load_data()
-
-if df_raw.empty:
-    st.stop()
-
-# --- 3. Sidebar - Filtering & Laser Controls ---
-st.sidebar.header("🔍 Location Filter")
-
-sido_list = sorted(df_raw["시도명"].dropna().unique().tolist())
-selected_sido = st.sidebar.selectbox("Select Region (Sido)", sido_list)
-
-filtered_df = df_raw[df_raw["시도명"] == selected_sido].copy()
-
-if dong_column:
-    dong_list = ["All"] + sorted(filtered_df[dong_column].dropna().unique().tolist())
-    selected_dong = st.sidebar.selectbox("Select Neighborhood (Dong)", dong_list)
-
-    if selected_dong != "All":
-        filtered_df = filtered_df[filtered_df[dong_column] == selected_dong]
-
-# Mode Toggle & Laser Sliders
-st.sidebar.markdown("---")
-laser_mode = st.sidebar.checkbox("🔥 Enable Laser Destruction Mode", value=False)
-
-strike_radius = 60
-particle_count = 5
-
-if laser_mode:
-    st.sidebar.subheader("💥 Laser Strike Controls")
-    strike_radius = st.sidebar.slider("Strike Blast Radius (px)", min_value=20, max_value=200, value=80, step=10)
-    particle_count = st.sidebar.slider("Explosion Intensity (Particles)", min_value=1, max_value=20, value=8, step=1)
-
-# --- 4. Metrics Cards ---
-convenience_count = len(filtered_df[filtered_df["상권업종소분류명"] == "편의점"])
-cafe_count = len(filtered_df[filtered_df["상권업종소분류명"] == "카페"])
-total_count = len(filtered_df)
-
-col1, col2, col3 = st.columns(3)
-col1.metric("🏪 Convenience Stores", f"{convenience_count:,}")
-col2.metric("☕ Cafes", f"{cafe_count:,}")
-col3.metric("🏢 Total Stores", f"{total_count:,}")
-
-st.markdown("---")
-
-# --- 5. Map & Interactive Canvas ---
-if filtered_df.empty:
-    st.info("No stores match the selected criteria.")
-else:
-    if laser_mode:
-        st.warning(f"🎯 Click anywhere on the map! Blast Radius: {strike_radius}px | Particles per frame: {particle_count}")
-        
-        # Prepare data for JS
-        stores_data = []
-        for _, row in filtered_df.iterrows():
-            stores_data.append({
-                "name": str(row["상호명"]),
-                "type": str(row["상권업종소분류명"]),
-                "lat": float(row["위도"]),
-                "lng": float(row["경도"])
-            })
-
-        html_code = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <style>
-                body {{ margin: 0; overflow: hidden; background: #111; font-family: sans-serif; }}
-                canvas {{ display: block; cursor: crosshair; }}
-                #info {{
-                    position: absolute; top: 10px; left: 10px; color: #fff;
-                    background: rgba(0,0,0,0.7); padding: 8px 12px; border-radius: 5px;
-                    pointer-events: none; font-size: 14px;
-                }}
-            </style>
-        </head>
-        <body>
-            <div id="info">Remaining Stores: <span id="count">0</span> (Click to fire laser!)</div>
-            <canvas id="canvas"></canvas>
-
-            <script>
-                const canvas = document.getElementById('canvas');
-                const ctx = canvas.getContext('2d');
-                const countEl = document.getElementById('count');
-
-                canvas.width = window.innerWidth;
-                canvas.height = 650;
-
-                const rawStores = {json.dumps(stores_data)};
-                const blastRadius = {strike_radius};
-                const particleIntensity = {particle_count};
-
-                // Normalize bounding coordinates
-                let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
-                rawStores.forEach(s => {{
-                    if(s.lat < minLat) minLat = s.lat;
-                    if(s.lat > maxLat) maxLat = s.lat;
-                    if(s.lng < minLng) minLng = s.lng;
-                    if(s.lng > maxLng) maxLng = s.lng;
-                }});
-
-                const pad = 60;
-                let stores = rawStores.map(s => {{
-                    const x = pad + ((s.lng - minLng) / (maxLng - minLng || 1)) * (canvas.width - pad * 2);
-                    const y = canvas.height - pad - ((s.lat - minLat) / (maxLat - minLat || 1)) * (canvas.height - pad * 2);
-                    return {{
-                        ...s, x, y,
-                        alive: true,
-                        burnProgress: 0
-                    }};
-                }});
-
-                let lasers = [];
-                let particles = [];
-                let reticles = [];
-
-                function draw() {{
-                    ctx.fillStyle = '#181c24';
-                    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-                    // Grid lines
-                    ctx.strokeStyle = '#2a3242';
-                    ctx.lineWidth = 1;
-                    for(let x=0; x<canvas.width; x+=50) {{
-                        ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x, canvas.height); ctx.stroke();
-                    }}
-                    for(let y=0; y<canvas.height; y+=50) {{
-                        ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(canvas.width, y); ctx.stroke();
-                    }}
-
-                    // Draw blast area reticles
-                    reticles.forEach((r, idx) => {{
-                        ctx.beginPath();
-                        ctx.arc(r.x, r.y, blastRadius * r.scale, 0, Math.PI * 2);
-                        ctx.strokeStyle = `rgba(255, 0, 0, ${{r.alpha}})`;
-                        ctx.lineWidth = 2;
-                        ctx.stroke();
-
-                        r.scale += 0.05;
-                        r.alpha -= 0.04;
-                        if(r.alpha <= 0) reticles.splice(idx, 1);
-                    }});
-
-                    // Draw store nodes & burning animation
-                    let activeCount = 0;
-                    stores.forEach(s => {{
-                        if(!s.alive) return;
-                        activeCount++;
-
-                        if(s.burning) {{
-                            s.burnProgress += 0.04;
-                            
-                            // Spawn particles based on slider intensity
-                            for(let i=0; i<particleIntensity; i++) {{
-                                particles.push({{
-                                    x: s.x, y: s.y,
-                                    vx: (Math.random()-0.5) * (particleIntensity * 1.2),
-                                    vy: (Math.random()-0.5) * (particleIntensity * 1.2),
-                                    life: 1.0,
-                                    color: Math.random() > 0.3 ? '#ff4500' : '#ffff00'
-                                }});
-                            }}
-                            if(s.burnProgress >= 1) {{
-                                s.alive = false;
-                            }}
-                        }}
-
-                        ctx.beginPath();
-                        ctx.arc(s.x, s.y, s.type === '편의점' ? 5 : 6, 0, Math.PI * 2);
-                        if(s.burning) {{
-                            ctx.fillStyle = `rgba(255, 69, 0, ${{1 - s.burnProgress}})`;
-                        }} else {{
-                            ctx.fillStyle = s.type === '편의점' ? '#4da6ff' : '#ff9933';
-                        }}
-                        ctx.fill();
-
-                        ctx.fillStyle = 'rgba(255,255,255,0.6)';
-                        ctx.font = '10px sans-serif';
-                        ctx.fillText(s.name, s.x + 8, s.y + 3);
-                    }});
-
-                    countEl.innerText = activeCount;
-
-                    // Draw incoming laser strike beam
-                    lasers.forEach((l, index) => {{
-                        ctx.beginPath();
-                        ctx.moveTo(l.sx, l.sy);
-                        ctx.lineTo(l.ex, l.ey);
-                        ctx.strokeStyle = '#00ffff';
-                        ctx.lineWidth = l.width;
-                        ctx.shadowColor = '#00ffff';
-                        ctx.shadowBlur = 20;
-                        ctx.stroke();
-                        ctx.shadowBlur = 0;
-
-                        l.width *= 0.75;
-                        if(l.width < 0.5) lasers.splice(index, 1);
-                    }});
-
-                    // Update & draw particles
-                    particles.forEach((p, index) => {{
-                        p.x += p.vx;
-                        p.y += p.vy;
-                        p.life -= 0.025;
-                        if(p.life <= 0) {{
-                            particles.splice(index, 1);
-                        }} else {{
-                            ctx.beginPath();
-                            ctx.arc(p.x, p.y, Math.random()*2 + 1, 0, Math.PI*2);
-                            ctx.fillStyle = p.color;
-                            ctx.globalAlpha = p.life;
-                            ctx.fill();
-                            ctx.globalAlpha = 1.0;
-                        }}
-                    }});
-
-                    requestAnimationFrame(draw);
-                }}
-
-                canvas.addEventListener('click', (e) => {{
-                    const rect = canvas.getBoundingClientRect();
-                    const targetX = e.clientX - rect.left;
-                    const targetY = e.clientY - rect.top;
-
-                    // Laser beam
-                    lasers.push({{
-                        sx: targetX + (Math.random() - 0.5) * 300,
-                        sy: 0,
-                        ex: targetX,
-                        ey: targetY,
-                        width: 15
-                    }});
-
-                    // Visual shockwave ring matching blast radius
-                    reticles.push({{ x: targetX, y: targetY, scale: 0.1, alpha: 1.0 }});
-
-                    // Trigger stores inside blastRadius
-                    stores.forEach(s => {{
-                        if(s.alive && !s.burning) {{
-                            const dist = Math.hypot(s.x - targetX, s.y - targetY);
-                            if(dist <= blastRadius) {{
-                                s.burning = true;
-                            }}
-                        }}
-                    }});
-                }});
-
-                draw();
-            </script>
-        </body>
-        </html>
-        """
-        components.html(html_code, height=670)
-
-    else:
-        # Standard Plotly Map
-        import plotly.express as px
-        color_map = {"편의점": "#1f77b4", "카페": "#ff7f0e"}
-
-        hover_cols = {"상권업종소분류명": True, "위도": False, "경도": False}
-        if dong_column:
-            hover_cols[dong_column] = True
-
-        map_kwargs = {
-            "data_frame": filtered_df,
-            "lat": "위도",
-            "lon": "경도",
-            "color": "상권업종소분류명",
-            "color_discrete_map": color_map,
-            "hover_name": "상호명",
-            "hover_data": hover_cols,
-            "zoom": 10,
+        // 마임크래프트 느낌의 상자 장애물들
+        for(let i = 0; i < 15; i++) {
+            const boxGeo = new THREE.BoxGeometry(4, 4, 4);
+            const boxMat = new THREE.MeshLambertMaterial({ color: 0x8b4513 });
+            const box = new THREE.Mesh(boxGeo, boxMat);
+            box.position.set((Math.random() - 0.5) * 60, 2, (Math.random() - 0.5) * 60);
+            scene.add(box);
         }
 
-        if hasattr(px, "scatter_map"):
-            fig = px.scatter_map(**map_kwargs, map_style="open-street-map")
-        else:
-            fig = px.scatter_mapbox(**map_kwargs, mapbox_style="open-street-map")
+        // --- 2. 플레이어 설정 ---
+        const player = {
+            hp: 100,
+            speed: 0.15,
+            position: camera.position
+        };
+        player.position.set(0, 1.6, 10); // 눈높이 위치
 
-        fig.update_layout(margin={"r": 0, "t": 0, "l": 0, "b": 0}, legend_title_text="Category")
-        st.plotly_chart(fig, use_container_width=True)
+        // --- 3. 적 AI 설정 ---
+        const enemyGeo = new THREE.SphereGeometry(1, 16, 16);
+        const enemyMat = new THREE.MeshLambertMaterial({ color: 0xff0000 });
+        const enemy = new THREE.Mesh(enemyGeo, enemyMat);
+        enemy.position.set(0, 1, -20);
+        scene.add(enemy);
+
+        let enemyHp = 100;
+        let enemyLastShot = 0;
+
+        // --- 4. 총알 관리 배열 ---
+        const bullets = [];
+        const enemyBullets = [];
+
+        // --- 5. 컨트롤 및 입력 처리 ---
+        const keys = {};
+        let isLocked = false;
+
+        const instructions = document.getElementById('instructions');
+
+        instructions.addEventListener('click', () => {
+            document.body.requestPointerLock();
+        });
+
+        document.addEventListener('pointerlockchange', () => {
+            if (document.pointerLockElement === document.body) {
+                isLocked = true;
+                instructions.style.display = 'none';
+            } else {
+                isLocked = false;
+                instructions.style.display = 'flex';
+            }
+        });
+
+        // 회전 각도 관리
+        let yaw = 0;
+        let pitch = 0;
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isLocked) return;
+            
+            yaw -= e.movementX * 0.002;
+            pitch -= e.movementY * 0.002;
+
+            // 위아래 시점 제한 (목이 넘어가지 않도록)
+            pitch = Math.max(-Math.PI / 2 + 0.1, Math.min(Math.PI / 2 - 0.1, pitch));
+
+            const euler = new THREE.Euler(0, 0, 0, 'YXZ');
+            euler.x = pitch;
+            euler.y = yaw;
+            camera.quaternion.setFromEuler(euler);
+        });
+
+        document.addEventListener('keydown', (e) => keys[e.code] = true);
+        document.addEventListener('keyup', (e) => keys[e.code] = false);
+
+        // 발사 처리 (좌클릭)
+        document.addEventListener('mousedown', (e) => {
+            if (!isLocked || e.button !== 0 || player.hp <= 0) return;
+
+            // 플레이어 총알 생성
+            const bulletGeo = new THREE.SphereGeometry(0.1, 8, 8);
+            const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+            const bullet = new THREE.Mesh(bulletGeo, bulletMat);
+
+            bullet.position.copy(camera.position);
+            
+            // 카메라가 바라보는 방향 계산
+            const dir = new THREE.Vector3();
+            camera.getWorldDirection(dir);
+            bullet.userData = { velocity: dir.multiplyScalar(0.8) };
+
+            scene.add(bullet);
+            bullets.push(bullet);
+        });
+
+        // --- 6. 게임 루프 (업데이트) ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (isLocked && player.hp > 0 && enemyHp > 0) {
+                // [플레이어 이동 처리]
+                const moveVector = new THREE.Vector3();
+                if (keys['KeyW']) moveVector.z -= 1;
+                if (keys['KeyS']) moveVector.z += 1;
+                if (keys['KeyA']) moveVector.x -= 1;
+                if (keys['KeyD']) moveVector.x += 1;
+
+                moveVector.normalize();
+                moveVector.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+                camera.position.addScaledVector(moveVector, player.speed);
+                camera.position.y = 1.6; // 높이 고정
+
+                // [적 AI 행동]
+                const dirToPlayer = new THREE.Vector3().subVectors(player.position, enemy.position);
+                const distance = dirToPlayer.length();
+
+                // 플레이어 쪽으로 추적
+                if (distance > 5) {
+                    dirToPlayer.y = 0;
+                    dirToPlayer.normalize();
+                    enemy.position.addScaledVector(dirToPlayer, 0.03);
+                }
+
+                // 일정 주기마다 플레이어에게 총알 발사
+                const now = Date.now();
+                if (now - enemyLastShot > 1500) { 
+                    enemyLastShot = now;
+                    const eBulletGeo = new THREE.SphereGeometry(0.15, 8, 8);
+                    const eBulletMat = new THREE.MeshBasicMaterial({ color: 0xff0055 });
+                    const eBullet = new THREE.Mesh(eBulletGeo, eBulletMat);
+                    
+                    eBullet.position.copy(enemy.position);
+                    const shootDir = new THREE.Vector3().subVectors(player.position, enemy.position).normalize();
+                    eBullet.userData = { velocity: shootDir.multiplyScalar(0.4) };
+
+                    scene.add(eBullet);
+                    enemyBullets.push(eBullet);
+                }
+
+                // [플레이어 총알 이동 & 충돌 판정]
+                for (let i = bullets.length - 1; i >= 0; i--) {
+                    const b = bullets[i];
+                    b.position.add(b.userData.velocity);
+
+                    // 적과 총알 충돌 확인
+                    if (b.position.distanceTo(enemy.position) < 1.2) {
+                        enemyHp -= 20;
+                        document.getElementById('enemyHp').innerText = Math.max(0, enemyHp);
+                        scene.remove(b);
+                        bullets.splice(i, 1);
+
+                        if (enemyHp <= 0) {
+                            scene.remove(enemy);
+                            alert("승리했습니다! 적을 처치했습니다.");
+                            location.reload();
+                        }
+                        continue;
+                    }
+
+                    // 일정 거리 이상 넘어가면 사거리 제한으로 삭제
+                    if (b.position.length() > 100) {
+                        scene.remove(b);
+                        bullets.splice(i, 1);
+                    }
+                }
+
+                // [적 총알 이동 & 충돌 판정]
+                for (let i = enemyBullets.length - 1; i >= 0; i--) {
+                    const eb = enemyBullets[i];
+                    eb.position.add(eb.userData.velocity);
+
+                    // 플레이어와 충돌 확인
+                    if (eb.position.distanceTo(player.position) < 0.8) {
+                        player.hp -= 10;
+                        document.getElementById('playerHp').innerText = Math.max(0, player.hp);
+                        scene.remove(eb);
+                        enemyBullets.splice(i, 1);
+
+                        if (player.hp <= 0) {
+                            alert("패배했습니다! 적의 공격에 쓰러졌습니다.");
+                            location.reload();
+                        }
+                        continue;
+                    }
+
+                    if (eb.position.length() > 100) {
+                        scene.remove(eb);
+                        enemyBullets.splice(i, 1);
+                    }
+                }
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // 창 크기 조절 대응
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>
